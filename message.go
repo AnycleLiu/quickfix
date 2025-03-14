@@ -586,6 +586,10 @@ func formatCheckSum(value int) string {
 	return fmt.Sprintf("%03d", value)
 }
 
+func (m *Message) Build() []byte {
+	return m.build()
+}
+
 // Build constructs a []byte from a Message instance.
 func (m *Message) build() []byte {
 	m.cook()
