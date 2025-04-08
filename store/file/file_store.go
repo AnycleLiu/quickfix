@@ -311,7 +311,7 @@ func (store *fileStore) CreationTime() time.Time {
 func (store *fileStore) SetCreationTime(_ time.Time) {
 }
 
-func (store *fileStore) SaveMessage(seqNum int, msg []byte) error {
+func (store *fileStore) saveMessages(seqNum int, messages [][]byte) error {
 	store.fileMu.Lock()
 	defer store.fileMu.Unlock()
 	offset, err := store.bodyFile.Seek(0, io.SeekEnd)
@@ -321,12 +321,15 @@ func (store *fileStore) SaveMessage(seqNum int, msg []byte) error {
 	if _, err := store.headerFile.Seek(0, io.SeekEnd); err != nil {
 		return fmt.Errorf("unable to seek to end of file: %s: %s", store.headerFname, err.Error())
 	}
-	if _, err := fmt.Fprintf(store.headerFile, "%d,%d,%d\n", seqNum, offset, len(msg)); err != nil {
-		return fmt.Errorf("unable to write to file: %s: %s", store.headerFname, err.Error())
-	}
-
-	if _, err := store.bodyFile.Write(msg); err != nil {
-		return fmt.Errorf("unable to write to file: %s: %s", store.bodyFname, err.Error())
+	msgOffset := offset
+	for seqOffset, msg := range messages {
+		if _, err := fmt.Fprintf(store.headerFile, "%d,%d,%d\n", seqNum+seqOffset, msgOffset, len(msg)); err != nil {
+			return fmt.Errorf("unable to write to file: %s: %s", store.headerFname, err.Error())
+		}
+		if _, err := store.bodyFile.Write(msg); err != nil {
+			return fmt.Errorf("unable to write to file: %s: %s", store.bodyFname, err.Error())
+		}
+		msgOffset = msgOffset + int64(len(msg))
 	}
 	if store.fileSync {
 		if err := store.bodyFile.Sync(); err != nil {
@@ -340,12 +343,24 @@ func (store *fileStore) SaveMessage(seqNum int, msg []byte) error {
 	return nil
 }
 
+func (store *fileStore) SaveMessage(seqNum int, msg []byte) error {
+	return store.saveMessages(seqNum, [][]byte{msg})
+}
+
 func (store *fileStore) SaveMessageAndIncrNextSenderMsgSeqNum(seqNum int, msg []byte) error {
 	err := store.SaveMessage(seqNum, msg)
 	if err != nil {
 		return err
 	}
 	return store.IncrNextSenderMsgSeqNum()
+}
+
+func (store *fileStore) SaveBatchAndIncrNextSenderMsgSeqNum(seqNum int, msg [][]byte) error {
+	err := store.saveMessages(seqNum, msg)
+	if err != nil {
+		return err
+	}
+	return store.SetNextSenderMsgSeqNum(store.cache.NextSenderMsgSeqNum() + len(msg))
 }
 
 func (store *fileStore) IterateMessages(beginSeqNum, endSeqNum int, cb func([]byte) error) error {

@@ -396,6 +396,61 @@ func (s *session) persist(seqNum int, msgBytes []byte) error {
 	return s.store.IncrNextSenderMsgSeqNum()
 }
 
+// queueBatchAppsForSend will validate, persist, and queue the messages for send.
+func (s *session) queueBatchAppsForSend(msg []*Message) error {
+	s.sendMutex.Lock()
+	defer s.sendMutex.Unlock()
+
+	msgBytes, err := s.prepBatchAppMessagesForSend(msg)
+	if err != nil {
+		return err
+	}
+
+	s.toSend = append(s.toSend, msgBytes...)
+	s.notifyMessageOut()
+
+	return nil
+}
+
+func (s *session) prepBatchAppMessagesForSend(msg []*Message) (msgBytes [][]byte, err error) {
+	msgBytes = make([][]byte, len(msg))
+
+	seqNum := s.store.NextSenderMsgSeqNum()
+	for i, m := range msg {
+		m := m.ToMessage()
+		s.fillDefaultHeader(m, nil)
+		m.Header.SetField(tagMsgSeqNum, FIXInt(seqNum+i))
+
+		msgType, err := m.Header.GetBytes(tagMsgType)
+		if err != nil {
+			return nil, err
+		}
+		if isAdminMessageType(msgType) {
+			return nil, fmt.Errorf("cannot send admin messages in batch")
+		}
+
+		if err := s.application.ToApp(m, s.sessionID); err != nil {
+			return nil, err
+		}
+
+		msgBytes[i] = m.build()
+	}
+
+	if err := s.persistBatch(seqNum, msgBytes); err != nil {
+		return nil, err
+	}
+
+	return msgBytes, nil
+}
+
+func (s *session) persistBatch(seqNum int, msgBytes [][]byte) error {
+	if !s.DisableMessagePersist {
+		return s.store.SaveBatchAndIncrNextSenderMsgSeqNum(seqNum, msgBytes)
+	}
+
+	return s.store.SetNextSenderMsgSeqNum(seqNum + len(msgBytes))
+}
+
 func (s *session) sendQueued(blockUntilSent bool) {
 	for i, msgBytes := range s.toSend {
 		if !s.sendBytes(msgBytes, blockUntilSent) {
